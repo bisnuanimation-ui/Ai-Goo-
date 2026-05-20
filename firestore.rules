@@ -1,0 +1,89 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net (catch-all default deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitive Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Entity Schema Validation Helpers
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) 
+        && data.keys().size() <= 4
+        && data.uid is string
+        && data.uid.size() <= 128
+        && data.email is string
+        && data.email.size() <= 200
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 200))
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500));
+    }
+
+    function isValidAnalysis(data) {
+      return data.keys().hasAll(['uid', 'masterPrompt', 'createdAt'])
+        && data.keys().size() <= 8
+        && data.uid is string
+        && data.uid.size() <= 128
+        && data.masterPrompt is string
+        && data.masterPrompt.size() <= 10000
+        && data.createdAt is timestamp
+        && (!('cameraAngle' in data) || (data.cameraAngle is string && data.cameraAngle.size() <= 1000))
+        && (!('backgroundSetting' in data) || (data.backgroundSetting is string && data.backgroundSetting.size() <= 2000))
+        && (!('characterPose' in data) || (data.characterPose is string && data.characterPose.size() <= 2000))
+        && (!('emotionalVibe' in data) || (data.emotionalVibe is string && data.emotionalVibe.size() <= 2000))
+        && (!('locationDetails' in data) || (data.locationDetails is string && data.locationDetails.size() <= 2000));
+    }
+
+    // Rules for User profiles
+    match /users/{uid} {
+      allow get: if isOwner(uid);
+      allow list: if false; // Blanket reads blocked
+      
+      allow create: if isOwner(uid) 
+        && isValidId(uid) 
+        && isValidUser(incoming())
+        && incoming().uid == uid;
+        
+      allow update: if isOwner(uid) 
+        && isValidUser(incoming())
+        && incoming().uid == uid
+        && incoming().email == existing().email; // Email is immutable
+    }
+
+    // Rules for Analysis history nested under users
+    match /users/{uid}/analyses/{analysisId} {
+      allow get: if isOwner(uid);
+      allow list: if isOwner(uid); // List is securely restricted to owner only
+      
+      allow create: if isOwner(uid)
+        && isValidId(uid)
+        && isValidId(analysisId)
+        && isValidAnalysis(incoming())
+        && incoming().uid == uid
+        && incoming().createdAt == request.time; // Temporal integrity
+        
+      allow update, delete: if false; // Analyses are strictly immutable logs
+    }
+  }
+}
